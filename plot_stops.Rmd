@@ -1,0 +1,37 @@
+```{r}
+library(data.table)
+library('dplyr')
+
+data <- fread("./data/google_transit_M4/stops.txt")
+data <- filter(data, substr(data$stop_id, 0, 3) == 'est')
+data
+```
+
+```{r}
+unique(data$zone_id)
+```
+
+```{r}
+install.packages("leaflet")
+```
+
+```{r}
+map <- c('A'='#F44', 'B1'='#44F', 'B2'='#55F', 'B4'='#66F')
+color <- map[data$zone_id]
+color[is.na(color)] <- '#999'
+color <- unname(color)
+```
+
+```{r}
+leaflet() %>%
+  addTiles() %>%
+  addCircles(lat=data$stop_lat, lng=data$stop_lon, color=color)
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
