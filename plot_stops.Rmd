@@ -1,23 +1,23 @@
+## Load libraries
+
 ```{r}
 library(data.table)
-library('dplyr')
-
-data <- fread("./data/google_transit_M4/stops.txt")
-data <- filter(data, substr(data$stop_id, 0, 3) == 'est')
-data
+library(dplyr)
+library(leaflet)
 ```
 
-```{r}
-unique(data$zone_id)
-```
+## Plot stops
 
 ```{r}
-install.packages("leaflet")
+
+stops <- fread("./data/google_transit_M4/stops.txt")
+stops <- filter(stops, substr(stops$stop_id, 0, 3) == 'par')
+stops
 ```
 
 ```{r}
 map <- c('A'='#F44', 'B1'='#44F', 'B2'='#55F', 'B4'='#66F')
-color <- map[data$zone_id]
+color <- map[stops$zone_id]
 color[is.na(color)] <- '#999'
 color <- unname(color)
 ```
@@ -25,13 +25,81 @@ color <- unname(color)
 ```{r}
 leaflet() %>%
   addTiles() %>%
-  addCircles(lat=data$stop_lat, lng=data$stop_lon, color=color)
+  addCircles(lat=stops$stop_lat, lng=stops$stop_lon, color=color)
+```
+
+## Plot trips
+
+```{r}
+time <- '2024-05-09 10:15:00'
+
+time <- strptime(time, "%Y-%m-%d %H:%M:%S")
+weekday <- as.numeric(strftime(time, '%w'))
+weekdays <- c(
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+)
+weekday <- weekdays[weekday]
 ```
 
 ```{r}
+calendar <- fread("./data/google_transit_M4/calendar.txt")
+availability <- calendar %>% select(c(weekday, 'service_id'))
 
+if (sum(availability[,1]) != 1) {
+  print("No service!")
+}
+
+service <- calendar[unlist(availability[,1]) == 1]$service_id
 ```
 
 ```{r}
+trips <- fread("./data/google_transit_M4/trips.txt")
+routes <- fread("./data/google_transit_M4/routes.txt")
+routes$route_color <- paste("#", routes$route_color, sep='')
+routes$text_color <- paste("#", routes$text_color, sep='')
 
+trips <- trips %>%
+  filter(trips$service_id == service & substr(trips$trip_id, 19, 19) == '1') %>%
+  merge(routes, by="route_id") %>%
+  select(route_id, trip_id, route_color, route_text_color, route_long_name)
+nrow(trips)
+```
+
+```{r}
+stop_times <- fread("./data/google_transit_M4/stop_times.txt")
+stop_times <- stop_times %>%
+  merge(stops, by="stop_id") %>%
+  # merge(trips, by="trip_id") %>%
+  select(c(
+    stop_id, trip_id, arrival_time, departure_time, stop_sequence, 
+    stop_lat, stop_lon, zone_id, 
+    #route_id, route_color, route_id, route_text_color, route_long_name
+  ))
+stop_times
+```
+
+```{r}
+map <- leaflet() %>%
+  addTiles() %>%
+  addCircles(
+    lat=stops$stop_lat,
+    lng=stops$stop_lon,
+    label=stops$stop_name,
+    color=color,
+    radius=20,
+)
+
+for (row in 1:nrow(trips)) {
+  trip_stops <- stop_times %>% filter(stop_times$trip_id == trips[row]$trip_id)
+  trip_stops <- trip_stops[order(trip_stops$stop_sequence),]
+  map <- map %>% addPolylines(
+    lat=trip_stops$stop_lat, 
+    lng=trip_stops$stop_lon, 
+    color=trips[row]$route_color, 
+    label=trips[row]$route_long_name,
+    weight=3, opacity=0.8,
+  )
+}
+
+map
 ```
