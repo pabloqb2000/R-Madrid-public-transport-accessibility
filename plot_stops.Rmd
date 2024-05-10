@@ -31,29 +31,40 @@ leaflet() %>%
 ## Plot trips
 
 ```{r}
-time <- '2024-05-09 10:15:00'
+datetime <- '2024-05-09 07:15:00'
+datetime <- strptime(datetime, "%Y-%m-%d %H:%M:%S")
 
-time <- strptime(time, "%Y-%m-%d %H:%M:%S")
-weekday <- as.numeric(strftime(time, '%w'))
-weekdays <- c(
-  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
-)
-weekday <- weekdays[weekday]
+calendar_dates <- fread("./data/google_transit_M4/calendar_dates.txt")
+exception <- calendar_dates[calendar_dates$date == strftime(datetime, "%Y%m%d")]
+
+if (nrow(exception) == 0) {
+  weekday <- as.numeric(strftime(datetime, '%w'))
+  weekdays <- c(
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+  )
+  weekday <- weekdays[weekday]
+  
+  calendar <- fread("./data/google_transit_M4/calendar.txt")
+  availability <- calendar %>% select(c(weekday, 'service_id'))
+  
+  if (sum(availability[,1]) != 1) {
+    print("No service!")
+  }
+  
+  service <- calendar[unlist(availability[,1]) == 1]$service_id
+} else {
+  service <- exception[1]$service_id
+}
+
+service
 ```
 
 ```{r}
-calendar <- fread("./data/google_transit_M4/calendar.txt")
-availability <- calendar %>% select(c(weekday, 'service_id'))
-
-if (sum(availability[,1]) != 1) {
-  print("No service!")
-}
-
-service <- calendar[unlist(availability[,1]) == 1]$service_id
 ```
 
 ```{r}
 trips <- fread("./data/google_transit_M4/trips.txt")
+
 routes <- fread("./data/google_transit_M4/routes.txt")
 routes$route_color <- paste("#", routes$route_color, sep='')
 routes$text_color <- paste("#", routes$text_color, sep='')
@@ -62,18 +73,31 @@ trips <- trips %>%
   filter(trips$service_id == service & substr(trips$trip_id, 19, 19) == '1') %>%
   merge(routes, by="route_id") %>%
   select(route_id, trip_id, route_color, route_text_color, route_long_name)
-nrow(trips)
+
+frequencies <- fread("./data/google_transit_M4/frequencies.txt")
+time <- strptime(strftime(datetime, "%H:%M:%S"), "%H:%M:%S")
+frequencies <- frequencies %>% 
+  filter( # TODO: Support hours > 24h
+    strptime(frequencies$start_time, "%H:%M:%S") <= time&
+    strptime(frequencies$end_time, "%H:%M:%S") > time
+  )
+
+if (nrow(frequencies) > 0) {
+  trips <- trips %>% 
+    merge(frequencies, by="trip_id") %>%
+    select(-c(start_time, end_time, exact_times))
+}
+
+trips
 ```
 
 ```{r}
 stop_times <- fread("./data/google_transit_M4/stop_times.txt")
 stop_times <- stop_times %>%
   merge(stops, by="stop_id") %>%
-  # merge(trips, by="trip_id") %>%
   select(c(
     stop_id, trip_id, arrival_time, departure_time, stop_sequence, 
-    stop_lat, stop_lon, zone_id, 
-    #route_id, route_color, route_id, route_text_color, route_long_name
+    stop_lat, stop_lon, zone_id,
   ))
 stop_times
 ```
@@ -97,9 +121,35 @@ for (row in 1:nrow(trips)) {
     lng=trip_stops$stop_lon, 
     color=trips[row]$route_color, 
     label=trips[row]$route_long_name,
-    weight=3, opacity=0.8,
+    weight=((20*60 - trips[row]$headway_secs)/(20*60))^4*16 + 1, opacity=0.8,
   )
 }
 
 map
+```
+
+```{r}
+draw_map <- function(folder, time) {
+  stops <- fread("./data/google_transit_M4/stops.txt")
+  stops <- filter(stops, substr(stops$stop_id, 0, 3) == 'par')
+  time <- '2024-05-09 10:15:00'
+
+  weekday <- as.numeric(strftime(time, '%w'))
+  weekdays <- c(
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+  )
+  weekday <- weekdays[weekday]
+  calendar <- fread("./data/google_transit_M4/calendar.txt")
+  availability <- calendar %>% select(c(weekday, 'service_id'))
+  
+  if (sum(availability[,1]) != 1) {
+    print("No service!")
+  }
+  
+  service <- calendar[unlist(availability[,1]) == 1]$service_id
+}
+```
+
+```{r}
+
 ```
