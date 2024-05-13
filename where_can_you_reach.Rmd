@@ -1,0 +1,305 @@
+# Where can you reach in 30min?
+
+```{r}
+library(data.table)
+library(dplyr)
+library(leaflet)
+library(lubridate)
+```
+
+```{r}
+folder = "./data/google_transit_M6/"
+```
+
+```{r}
+load_stops = function(folder) {
+  stops <- fread(paste(folder, "stops.txt", sep=''))
+  stops <- filter(stops, substr(stops$stop_id, 0, 3) == 'par')
+  return (stops)
+}
+```
+
+```{r}
+stops_to_grid <- function(stops, n, m) {
+  eps <- 1e-10
+  min_lat = min(stops$stop_lat)
+  max_lat = max(stops$stop_lat)
+  min_lon = min(stops$stop_lon)
+  max_lon = max(stops$stop_lon)
+  lat_factor = n / (max_lat + eps - min_lat)
+  lon_factor = m / (max_lon + eps - min_lon)
+  
+  N <- n*m
+  grid <- vector("list", N)
+  dim(grid) <- c(m, n)
+  stop_idx <- 1
+  for(stop_idx in 1:nrow(stops)) {
+    stop <- stops[stop_idx]
+    i <- floor((stop$stop_lat - min_lat) * lat_factor) + 1
+    j <- floor((stop$stop_lon - min_lon) * lon_factor) + 1
+    grid[[j,i]] <- grid[[j,i]] %>% append(stop$stop_id)
+  }
+  
+  grid_data <- data.frame(
+    min_lat=min_lat,
+    min_lon=min_lon,
+    lat_factor=lat_factor,
+    lon_factor=lon_factor,
+    n=n,
+    m=m
+  )
+  
+  return(list("grid"=grid, "grid_data"=grid_data))
+}
+
+stops <- load_stops(folder)
+ans <- stops_to_grid(stops, 120, 120)
+grid <- ans$grid
+grid_data <- ans$grid_data
+ans$grid_data
+```
+
+```{r}
+stops_near_in_grid <- function(grid, grid_data, lat, lon, r) {
+  # r / Latitudinal earth circunference * 180
+  r_lat <- r / 40008 * 360 
+  # r /(|cos(lat)| * Earth radius * pi) * 180
+  r_lon <- r / (abs(cos(lat*pi/180)) * 6371 * pi) * 180
+
+  i_start <- floor((lat - r_lat - grid_data$min_lat) * grid_data$lat_factor) + 1
+  j_start <- floor((lon - r_lon - grid_data$min_lon) * grid_data$lon_factor) + 1
+  i_end <- floor((lat + r_lat - grid_data$min_lat) * grid_data$lat_factor) + 1
+  j_end <- floor((lon + r_lon - grid_data$min_lon) * grid_data$lon_factor) + 1
+  
+  i_start <- max(i_start, 1)
+  j_start <- max(j_start, 1)
+  i_end <- min(i_end, grid_data$n)
+  j_end <- min(j_end, grid_data$m)
+  
+  stops_near <- list()
+  for (i in i_start:i_end) {
+    for(j in j_start:j_end) {
+      stops_near <- c(stops_near, grid[[j,i]])
+    }
+  }
+  
+  return(stops_near)
+}
+
+lat <- 40.408868
+lon <- -3.633504
+r <- 2
+stops_near <- stops_near_in_grid(grid, grid_data, lat, lon, r)
+# (stops %>% filter(stop_id %in% stops_near))$stop_name
+```
+
+```{r}
+get_dist <- function(lat1, lon1, lat2, lon2) {
+  # Harvsine formula to avoid numerical errors
+  # Convert degrees to radians
+  lat1 <- lat1 * pi / 180
+  lon1 <- lon1 * pi / 180
+  lat2 <- lat2 * pi / 180
+  lon2 <- lon2 * pi / 180
+
+  # Radius of the Earth in kilometers
+  r <- 6371.0
+
+  # Differences
+  dlat <- lat2 - lat1
+  dlon <- lon2 - lon1
+
+  # Haversine formula
+  a <- sin(dlat / 2)^2 + cos(lat1) * cos(lat2) * sin(dlon / 2)^2
+  c <- 2 * atan2(sqrt(a), sqrt(1 - a))
+  d <- r * c
+
+  return(d)
+}
+
+get_stops_at_distance <- function(grid, grid_data, stops, lat, lon, r) {
+  stops_near <- stops_near_in_grid(grid, grid_data, lat, lon, r)
+  stops_near <- stops %>% filter(stop_id %in% stops_near)
+  stops_near$dist <- get_dist(stops_near$stop_lat, stops_near$stop_lon, lat, lon)
+  return(stops_near[stops_near$dist < r])
+}
+
+lat <- 40.408868
+lon <- -3.633504
+r <- .3
+get_stops_at_distance(grid, grid_data, stops, lat, lon, r)
+```
+
+```{r}
+get_walking_conexions <- function(
+    grid, grid_data, stops, walking_speed, max_dist
+  ) {
+  walking_conexions <- list()
+  for (i in 1:nrow(stops)) {
+    stop <- stops[i]
+    stops_near <- get_stops_at_distance(
+      grid, grid_data, stops, stop$stop_lat, stop$stop_lon, max_dist
+    )
+    
+    walking_conexions <- rbind(walking_conexions, data.frame( 
+      start_stop = stop$stop_id,
+      end_stop = stops_near$stop_id,
+      conexion_time = stops_near$dist / walking_speed
+    ))
+  }
+  
+  walking_conexions <- walking_conexions %>% filter(
+    walking_conexions$start_stop != walking_conexions$end_stop
+  )
+  
+  return(walking_conexions)
+}
+
+walking_speed <- 2.5 / 60 # km / min
+max_time <- 15 # min
+walking_conexions <- get_walking_conexions(
+  grid, grid_data, stops, walking_speed, walking_speed*max_time
+)
+walking_conexions
+```
+
+```{r}
+load_conexions <- function(folder) {
+  conexions <- fread(paste(folder, '/stop_times.txt', sep=''))
+  conexions <- subset(conexions, select=-c(
+    stop_headsign, pickup_type, drop_off_type, shape_dist_traveled
+  ))
+  
+  conexions <- conexions[order(conexions$trip_id, conexions$stop_sequence),]
+  conexions_aux <- rbind(conexions, data.frame(
+    trip_id="NULL", arrival_time="00:00:01", departure_time="00:00:01", 
+    stop_id="NULL", stop_sequence=-1))
+  conexions <- rbind(data.frame(
+    trip_id="NULL", arrival_time="00:00:01", departure_time="00:00:01", 
+    stop_id="NULL", stop_sequence=-1), conexions)
+  
+  conexions$arrival_time <- hms(conexions_aux$arrival_time)
+  conexions$end_stop <- conexions_aux$stop_id
+  conexions$other_trip_id <- conexions_aux$trip_id
+  conexions <- conexions[-1,]
+  conexions <- conexions[conexions$trip_id == conexions$other_trip_id, ]
+  
+  conexions$departure_time <- hms(conexions$departure_time)
+  conexions <- conexions[order(conexions$arrival_time), ]
+  
+  return(conexions)
+}
+
+conexions <- load_conexions(folder)
+conexions
+```
+
+```{r}
+insertSorted <- function(df, rows) {
+  for(i in 1:nrow(rows)) {
+    row <- rows[i,]
+    idx <- findInterval(row$remaining_time, df$remaining_time)
+    if (idx < nrow(df)) {
+      df <- rbind(df[0:idx, ], row, df[(idx+1):nrow(df), ])
+    } else {
+      df <- rbind(df, row)
+    }
+  }
+  return(df)
+}
+```
+
+```{r}
+# lat <- 40.408551
+# lon <- -3.633551
+lat <- 40.4072 
+lon <- -3.63134
+time_start <- "08:15:00"
+travel_time <- 45
+walking_speed <- 2.5 / 60 
+eps <- .1
+
+time_start <- hms(time_start)
+time_end <- time_start + minutes(travel_time)
+
+stops_reached <- get_stops_at_distance(
+  grid, grid_data, stops, lat, lon, travel_time * walking_speed
+)
+
+
+stops_reached$remaining_time <- travel_time - stops_reached$dist / walking_speed
+stops_reached <- subset(stops_reached, select=c(stop_id, remaining_time))
+stops_reached <- stops_reached[order(stops_reached$remaining_time),]
+stops_reached$walking <- TRUE
+
+visited <- c()
+circles <- data.frame(lat=lat, lon=lon, r=travel_time*walking_speed)
+
+while (nrow(stops_reached) > 0) {
+  stop <- stops_reached[nrow(stops_reached)]
+  stops_reached <- head(stops_reached, -1)
+  if(stop$stop_id %in% visited) next
+  stop_info <- stops[stops$stop_id == stop$stop_id]
+  visited <- c(visited, stop$stop_id)
+    
+  if (!stop$walking) {
+    circles[nrow(circles) + 1, ] <- c(
+      stop_info$stop_lat, stop_info$stop_lon, stop$remaining_time * walking_speed
+    )
+  
+    # Walking conexions
+    stop_walking_conexions <- walking_conexions %>% 
+      filter(walking_conexions$start_stop == stop$stop_id)
+    stop_walking_conexions <- stop_walking_conexions %>% 
+      filter(stop_walking_conexions$conexion_time <= stop$remaining_time)
+    stop_walking_conexions <- stop_walking_conexions %>% 
+      filter(!(stop_walking_conexions$end_stop %in% visited))
+    
+    if (nrow(stop_walking_conexions) > 0) {
+      new_stops <- data.frame(
+        stop_id = stop_walking_conexions$end_stop,
+        remaining_time = stop$remaining_time - stop_walking_conexions$conexion_time,
+        walking=TRUE
+      )
+      stops_reached <- insertSorted(stops_reached, new_stops)
+    }
+  }
+  
+  # Normal conexions
+  stop_conexions <- conexions %>% 
+    filter(conexions$stop_id == stop$stop_id)
+  stop_conexions <- stop_conexions %>% 
+    filter(stop_conexions$arrival_time <= time_end)
+  stop_conexions <- stop_conexions %>% 
+    filter(stop_conexions$departure_time >= time_end - 60*(stop$remaining_time + eps))
+  stop_conexions <- stop_conexions %>%
+    distinct(end_stop, .keep_all=TRUE)
+  stop_conexions <- stop_conexions %>% 
+    filter(!(stop_conexions$end_stop %in% visited))
+  
+  if (nrow(stop_conexions) > 0) {
+    new_stops <- data.frame(
+      stop_id = stop_conexions$end_stop,
+      remaining_time = as.numeric(
+        time_end - stop_conexions$arrival_time, units="min"),
+      walking=FALSE
+    )
+    stops_reached <- insertSorted(stops_reached, new_stops)
+  }
+  
+  # TODO: frecuency conexions
+}
+
+map <- leaflet() %>%
+  addTiles() %>%
+  # addCircles(lat=circles$lat, lng=circles$lon, 
+  #            fillOpacity=0.2, radius=1000*circles$r, stroke=FALSE) %>%
+  addCircles(lat=circles$lat, lng=circles$lon, 
+             weight=1, radius=1000*circles$r, fill=FALSE) %>%
+  addMarkers(lat=circles[1,]$lat, lng=circles[1,]$lon)
+map
+```
+
+```{r}
+
+```

@@ -245,5 +245,5 @@ draw_map <- function(folder, datetime, map) {
 ```
 
 ```{r}
-draw_map('./data/google_transit_M5', '2024-05-09 10:15:00', leaflet())
+draw_map('./data/google_transit_M6', '2024-05-09 10:15:00', leaflet())
 ```
