@@ -5,6 +5,7 @@ library(data.table)
 library(dplyr)
 library(leaflet)
 library(lubridate)
+library(raster)
 ```
 
 ```{r}
@@ -302,4 +303,42 @@ map
 
 ```{r}
 
+lon_min <- min(stops$stop_lon)
+lon_max <- max(stops$stop_lon)
+lat_min <- min(stops$stop_lat)
+lat_max <- max(stops$stop_lat)
+lat <- 40.4072 
+lon <- -3.63134
+
+N <- 1000
+M <- 1000
+
+lons <- seq(lon_min, lon_max, length.out=N)
+lats <- seq(lat_max, lat_min, length.out=M)
+grid <- expand.grid(x=lons, y=lats)
+
+min_travel_time <- rep(travel_time + 1, N*M)
+for (i in 1:nrow(circles)) {
+  circle <- circles[i,]
+  # distance <- sqrt((grid$x - lon)^2 + (grid$y - lat)^2)
+  min_travel_time <- pmin(
+    get_dist(circle$lat, circle$lon, grid$y, grid$x)/walking_speed + travel_time - circle$r/walking_speed,
+    min_travel_time
+  )
+}
+
+# Create a RasterLayer object
+min_travel_time[min_travel_time > travel_time] <- NA
+r <- raster(ncol=N, nrow=M, xmn=lon_min, xmx=lon_max, ymn=lat_min, ymx=lat_max)
+r[] <- min_travel_time
+
+# Define a color palette
+pal <- colorNumeric(c("#0C2C84", "#41B6C4", "#FFFFCC"), values(r), na.color = "transparent")
+
+# Add the raster image to the leaflet map
+leaflet() %>%
+  addTiles() %>%
+  addRasterImage(r, colors = pal, opacity = 0.5) %>%
+  addMarkers(lat=lat, lng=lon) %>%
+  addLegend(pal = pal, values = values(r), title = "Surface temp")
 ```
