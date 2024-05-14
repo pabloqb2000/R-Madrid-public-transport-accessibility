@@ -6,6 +6,7 @@ library(dplyr)
 library(leaflet)
 library(lubridate)
 library(raster)
+library(beepr)
 ```
 
 ```{r}
@@ -87,8 +88,8 @@ stops_near_in_grid <- function(grid, grid_data, lat, lon, r) {
   return(stops_near)
 }
 
-lat <- 40.408868
-lon <- -3.633504
+lat <- 40.451289
+lon <- -3.728552
 r <- 2
 stops_near <- stops_near_in_grid(grid, grid_data, lat, lon, r)
 # (stops %>% filter(stop_id %in% stops_near))$stop_name
@@ -125,8 +126,8 @@ get_stops_at_distance <- function(grid, grid_data, stops, lat, lon, r) {
   return(stops_near[stops_near$dist < r])
 }
 
-lat <- 40.408868
-lon <- -3.633504
+lat <- 40.451289
+lon <- -3.728552
 r <- .3
 get_stops_at_distance(grid, grid_data, stops, lat, lon, r)
 ```
@@ -211,70 +212,44 @@ insertSorted <- function(df, rows) {
 ```
 
 ```{r}
-# lat <- 40.408551
-# lon <- -3.633551
-lat <- 40.4072 
-lon <- -3.63134
-time_start <- "08:15:00"
-travel_time <- 45
-walking_speed <- 2.5 / 60 
-eps <- .1
-
-time_start <- hms(time_start)
-time_end <- time_start + minutes(travel_time)
-
-stops_reached <- get_stops_at_distance(
-  grid, grid_data, stops, lat, lon, travel_time * walking_speed
-)
-
-
-stops_reached$remaining_time <- travel_time - stops_reached$dist / walking_speed
-stops_reached <- subset(stops_reached, select=c(stop_id, remaining_time))
-stops_reached <- stops_reached[order(stops_reached$remaining_time),]
-stops_reached$walking <- TRUE
-
-visited <- c()
-circles <- data.frame(lat=lat, lon=lon, r=travel_time*walking_speed)
-
-while (nrow(stops_reached) > 0) {
-  stop <- stops_reached[nrow(stops_reached)]
-  stops_reached <- head(stops_reached, -1)
-  if(stop$stop_id %in% visited) next
-  stop_info <- stops[stops$stop_id == stop$stop_id]
-  visited <- c(visited, stop$stop_id)
-    
-  if (!stop$walking) {
-    circles[nrow(circles) + 1, ] <- c(
-      stop_info$stop_lat, stop_info$stop_lon, stop$remaining_time * walking_speed
+add_walking_conexions <- function(walking_conexions, stop, visited, stops_reached) {
+  stop_walking_conexions <- walking_conexions %>% 
+    filter(walking_conexions$start_stop == stop$stop_id)
+  
+  stop_walking_conexions <- stop_walking_conexions %>% 
+    filter(stop_walking_conexions$conexion_time <= stop$remaining_time)
+  
+  stop_walking_conexions <- stop_walking_conexions %>% 
+    filter(!(stop_walking_conexions$end_stop %in% visited))
+  
+  if (nrow(stop_walking_conexions) > 0) {
+    new_stops <- data.frame(
+      stop_id = stop_walking_conexions$end_stop,
+      remaining_time = stop$remaining_time - stop_walking_conexions$conexion_time,
+      walking=TRUE
     )
-  
-    # Walking conexions
-    stop_walking_conexions <- walking_conexions %>% 
-      filter(walking_conexions$start_stop == stop$stop_id)
-    stop_walking_conexions <- stop_walking_conexions %>% 
-      filter(stop_walking_conexions$conexion_time <= stop$remaining_time)
-    stop_walking_conexions <- stop_walking_conexions %>% 
-      filter(!(stop_walking_conexions$end_stop %in% visited))
-    
-    if (nrow(stop_walking_conexions) > 0) {
-      new_stops <- data.frame(
-        stop_id = stop_walking_conexions$end_stop,
-        remaining_time = stop$remaining_time - stop_walking_conexions$conexion_time,
-        walking=TRUE
-      )
-      stops_reached <- insertSorted(stops_reached, new_stops)
-    }
+    return(insertSorted(stops_reached, new_stops))
   }
-  
-  # Normal conexions
+  return(stops_reached)
+}
+
+```
+
+```{r}
+add_normal_conexions <- function(conexions, stop, visited, stops_reached, time_end, eps) {
   stop_conexions <- conexions %>% 
     filter(conexions$stop_id == stop$stop_id)
+  
   stop_conexions <- stop_conexions %>% 
     filter(stop_conexions$arrival_time <= time_end)
+  
   stop_conexions <- stop_conexions %>% 
-    filter(stop_conexions$departure_time >= time_end - 60*(stop$remaining_time + eps))
+    filter(stop_conexions$departure_time >= 
+             time_end - 60*(stop$remaining_time + eps))
+  
   stop_conexions <- stop_conexions %>%
     distinct(end_stop, .keep_all=TRUE)
+  
   stop_conexions <- stop_conexions %>% 
     filter(!(stop_conexions$end_stop %in% visited))
   
@@ -285,16 +260,78 @@ while (nrow(stops_reached) > 0) {
         time_end - stop_conexions$arrival_time, units="min"),
       walking=FALSE
     )
-    stops_reached <- insertSorted(stops_reached, new_stops)
+    return(insertSorted(stops_reached, new_stops))
   }
-  
-  # TODO: frecuency conexions
+  return(stops_reached)
 }
+```
+
+```{r}
+get_reachable_circles <- function(lat, lon, time_start, travel_time, walking_speed, max_time, eps) {
+  time_start <- hms(time_start)
+  time_end <- time_start + minutes(travel_time)
+  
+  stops <- load_stops(folder)
+  ans <- stops_to_grid(stops, 120, 120)
+  grid <- ans$grid
+  grid_data <- ans$grid_data
+  
+  walking_conexions <- get_walking_conexions(
+    grid, grid_data, stops, walking_speed, walking_speed*max_time
+  )
+  conexions <- load_conexions(folder)
+  
+  stops_reached <- get_stops_at_distance(
+    grid, grid_data, stops, lat, lon, travel_time * walking_speed
+  )
+  
+  
+  stops_reached$remaining_time <- travel_time - stops_reached$dist / walking_speed
+  stops_reached <- subset(stops_reached, select=c(stop_id, remaining_time))
+  stops_reached <- stops_reached[order(stops_reached$remaining_time),]
+  stops_reached$walking <- TRUE
+  
+  visited <- c()
+  circles <- data.frame(lat=lat, lon=lon, r=travel_time*walking_speed)
+  
+  while (nrow(stops_reached) > 0) {
+    stop <- stops_reached[nrow(stops_reached)]
+    stops_reached <- head(stops_reached, -1)
+    if(stop$stop_id %in% visited) next
+    stop_info <- stops[stops$stop_id == stop$stop_id]
+    visited <- c(visited, stop$stop_id)
+      
+    if (!stop$walking) {
+      circles[nrow(circles) + 1, ] <- c(
+        stop_info$stop_lat, stop_info$stop_lon, stop$remaining_time * walking_speed
+      )
+    
+      # Walking conexions
+      stops_reached <- add_walking_conexions(
+        walking_conexions, stop, visited, stops_reached)
+    }
+    
+    # Normal conexions
+    stops_reached <- add_normal_conexions(
+      conexions, stop, visited, stops_reached, time_end, eps)
+    
+    # TODO: frecuency conexions
+  }
+  return(circles)
+}
+
+lat <- 40.451289
+lon <- -3.728552
+time_start <- "08:15:00"
+travel_time <- 45
+walking_speed <- 2.5 / 60 
+max_time <- 15 # min
+eps <- .1
+circles <- get_reachable_circles(
+  lat, lon, time_start, travel_time, walking_speed, max_time, eps)
 
 map <- leaflet() %>%
   addTiles() %>%
-  # addCircles(lat=circles$lat, lng=circles$lon, 
-  #            fillOpacity=0.2, radius=1000*circles$r, stroke=FALSE) %>%
   addCircles(lat=circles$lat, lng=circles$lon, 
              weight=1, radius=1000*circles$r, fill=FALSE) %>%
   addMarkers(lat=circles[1,]$lat, lng=circles[1,]$lon)
@@ -302,43 +339,108 @@ map
 ```
 
 ```{r}
+get_raster_img <- function(circles, stops, travel_time, walking_speed, N=1000, M=1000, m=0.015) {
+  lon_min <- min(stops$stop_lon) - m
+  lon_max <- max(stops$stop_lon) + m
+  lat_min <- min(stops$stop_lat) - m
+  lat_max <- max(stops$stop_lat) + m
+  
+  lons <- seq(lon_min, lon_max, length.out=N)
+  lats <- seq(lat_max, lat_min, length.out=M)
+  grid <- expand.grid(x=lons, y=lats)
+  
+  min_travel_time <- rep(travel_time + 1, N*M)
+  for (i in 1:nrow(circles)) {
+    circle <- circles[i,]
+    min_travel_time <- pmin(
+      get_dist(circle$lat, circle$lon, grid$y, grid$x)/walking_speed +
+        travel_time - circle$r/walking_speed,
+      min_travel_time
+    )
+  }
+  
+  # Create a RasterLayer object
+  # min_travel_time[min_travel_time > travel_time] <- NA
+  r <- raster(ncol=N, nrow=M, xmn=lon_min, xmx=lon_max, ymn=lat_min, ymx=lat_max)
+  r[] <- min_travel_time
+  
+  return(r)
+}
 
-lon_min <- min(stops$stop_lon)
-lon_max <- max(stops$stop_lon)
-lat_min <- min(stops$stop_lat)
-lat_max <- max(stops$stop_lat)
-lat <- 40.4072 
-lon <- -3.63134
 
 N <- 1000
 M <- 1000
 
-lons <- seq(lon_min, lon_max, length.out=N)
-lats <- seq(lat_max, lat_min, length.out=M)
-grid <- expand.grid(x=lons, y=lats)
+r <- get_raster_img(circles, stops, travel_time, walking_speed, N, M)
 
-min_travel_time <- rep(travel_time + 1, N*M)
-for (i in 1:nrow(circles)) {
-  circle <- circles[i,]
-  # distance <- sqrt((grid$x - lon)^2 + (grid$y - lat)^2)
-  min_travel_time <- pmin(
-    get_dist(circle$lat, circle$lon, grid$y, grid$x)/walking_speed + travel_time - circle$r/walking_speed,
-    min_travel_time
-  )
-}
-
-# Create a RasterLayer object
-min_travel_time[min_travel_time > travel_time] <- NA
-r <- raster(ncol=N, nrow=M, xmn=lon_min, xmx=lon_max, ymn=lat_min, ymx=lat_max)
-r[] <- min_travel_time
-
-# Define a color palette
-pal <- colorNumeric(c("#0C2C84", "#41B6C4", "#FFFFCC"), values(r), na.color = "transparent")
-
+colors <- c("#FF0000", "#FFFFFF", "#0000FF", "#000000")
+pal <- colorNumeric(colors, c(0, travel_time), na.color = "transparent")
 # Add the raster image to the leaflet map
-leaflet() %>%
+map <- leaflet() %>%
   addTiles() %>%
-  addRasterImage(r, colors = pal, opacity = 0.5) %>%
+  addRasterImage(r, colors = pal, opacity = 0.6) %>%
   addMarkers(lat=lat, lng=lon) %>%
-  addLegend(pal = pal, values = values(r), title = "Surface temp")
+  addLegend(pal = pal, values = c(0, travel_time), title = "Travel time (min)") %>%
+  setView(lng = lon, lat = lat, zoom = 9)
+map
+```
+
+```{r}
+colors <- c("#FFB866", "#FF0000", "#FFFFFF", "#0000FF", "#101022")
+pal <- colorNumeric(colors, c(0, travel_time), na.color = "transparent")
+# Add the raster image to the leaflet map
+map <- leaflet() %>%
+  addTiles() %>%
+  addRasterImage(r, colors = pal, opacity = 0.6) %>%
+  addMarkers(lat=lat, lng=lon) %>%
+  addLegend(pal = pal, values = c(0, travel_time), title = "Travel time (min)") %>%
+  setView(lng = lon, lat = lat, zoom = 12)
+map 
+```
+
+```{r}
+lat <- 40.451289
+lon <- -3.728552
+time_start <- "08:15:00"
+travel_time <- 25
+walking_speed <- 2.5 / 60 
+max_time <- min(15, travel_time) # min
+N <- 1000
+M <- 1000
+opacity <- 0.6
+colors <- c("#FFB866", "#FF0000", "#FFFFFF", "#0000FF", "#101022")
+eps <- .1
+
+pal <- colorNumeric(colors, c(0, travel_time), na.color = "transparent")
+
+circles <- get_reachable_circles(
+  lat, lon, time_start, travel_time, walking_speed, max_time, eps)
+
+r <- get_raster_img(circles, stops, travel_time, walking_speed, N, M)
+
+map <- leaflet() %>%
+  addTiles() %>%
+  addRasterImage(r, colors = pal, opacity = 0.6) %>%
+  addMarkers(lat=lat, lng=lon) %>%
+  addLegend(pal = pal, values = c(0, travel_time), title = "Travel time (min)") %>%
+  setView(lng = lon, lat = lat, zoom = 13)
+
+beep("coin")
+
+map
+```
+
+```{r}
+N <- 400
+M <- 400
+colors <- c("#0080FF", "#FFFFFF", "#000000", "#0000FF")
+pal <- colorNumeric(colors, c(0, travel_time), na.color = "transparent")
+# Add the raster image to the leaflet map
+map <- leaflet() %>%
+  addTiles() %>%
+  addRasterCircles(circles, stops, travel_time, walking_speed, pal, N, M, opacity=0.6) %>%
+  addMarkers(lat=lat, lng=lon) %>%
+  addLegend(pal = pal, values = c(0, travel_time), title = "Travel time (min)") %>%
+  setView(lng = lon, lat = lat, zoom = 9)
+map
 ```
