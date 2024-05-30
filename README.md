@@ -39,7 +39,7 @@ This section provides a map of all Madrid bus routes. The map is generated using
 
 ## Madrid Metro Lines
 
-This section provides a map of Madrid metro lines. The thickness of the metro line is proportional to the frequency of the line at the specified hour and day. This gives a visual representation of the metro line frequency.
+We also provide a map of Madrid metro lines. The thickness of the metro line is proportional to the frequency of the line at the specified hour and day.
 
 ![Madrid metro lines map](./results/metro.png)
 
